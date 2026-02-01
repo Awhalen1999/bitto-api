@@ -21,6 +21,13 @@ function getSortClause(sort: string): string {
   return sortMap[sort] || sortMap["last-modified"];
 }
 
+// Default canvas data structure
+const DEFAULT_CANVAS_DATA = {
+  version: 1,
+  objects: [],
+  viewport: { x: 0, y: 0, scale: 1 },
+};
+
 // Get canvases
 canvases.get("/", async (c) => {
   const user = c.get("user");
@@ -87,8 +94,13 @@ canvases.post("/", async (c) => {
   const { name } = createCanvasSchema.parse(body);
 
   const result = await sql`
-    INSERT INTO canvases (name, owner_id, last_edited_by)
-    VALUES (${name}, ${user.uid}, ${user.uid})
+    INSERT INTO canvases (name, owner_id, last_edited_by, canvas_data)
+    VALUES (
+      ${name}, 
+      ${user.uid}, 
+      ${user.uid},
+      ${JSON.stringify(DEFAULT_CANVAS_DATA)}
+    )
     RETURNING *
   `;
 
@@ -131,7 +143,7 @@ canvases.patch("/:id", async (c) => {
     result = await sql`
       UPDATE canvases
       SET name = ${validated.name},
-          canvas_data = ${validated.canvas_data},
+          canvas_data = ${JSON.stringify(validated.canvas_data)},
           last_edited_by = ${user.uid},
           last_edited_at = NOW()
       WHERE id = ${canvasId}
@@ -153,7 +165,7 @@ canvases.patch("/:id", async (c) => {
   } else if (validated.canvas_data) {
     result = await sql`
       UPDATE canvases
-      SET canvas_data = ${validated.canvas_data},
+      SET canvas_data = ${JSON.stringify(validated.canvas_data)},
           last_edited_by = ${user.uid},
           last_edited_at = NOW()
       WHERE id = ${canvasId}
