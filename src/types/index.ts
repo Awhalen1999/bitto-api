@@ -1,7 +1,9 @@
 import type { Context } from "hono";
 
+// Auth types
 export interface User {
-  uid: string;
+  id: string; // Internal database UUID
+  firebaseUid: string;
   email: string;
 }
 
@@ -11,26 +13,31 @@ export type Variables = {
 
 export type AuthContext = Context<{ Variables: Variables }>;
 
-export interface CanvasData {
-  version: number;
-  objects: CanvasObject[];
-  viewport: {
-    x: number;
-    y: number;
-    scale: number;
-  };
+// Canvas types
+export interface Canvas {
+  id: string;
+  owner_id: string;
+  name: string;
+  viewport_x: number;
+  viewport_y: number;
+  viewport_scale: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
 }
 
-export interface CanvasObject {
+// Asset types
+export interface Asset {
   id: string;
-  type: "asset" | "group";
-  assetId?: string;
+  canvas_id: string;
+  name: string;
+  file_type: string;
+  r2_url: string;
   x: number;
   y: number;
   width: number;
   height: number;
-  rotation?: number;
-  groupId?: string;
-  zIndex: number;
-  label?: string;
+  z_index: number;
+  created_at: string;
+  updated_at: string;
 }

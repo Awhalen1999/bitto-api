@@ -7,13 +7,14 @@ import type { Variables } from "../types/index.js";
 
 const assets = new Hono<{ Variables: Variables }>();
 
-// Apply auth middleware to all routes
 assets.use("*", authMiddleware);
 
 // Get all assets for a canvas
 assets.get("/canvas/:canvasId", async (c) => {
   const user = c.get("user");
   const canvasId = c.req.param("canvasId");
+
+  console.log(`📦 [ASSETS] Fetching assets for canvas ${canvasId}`);
 
   // Verify user has access to canvas
   const canvasCheck = await sql`
@@ -22,19 +23,21 @@ assets.get("/canvas/:canvasId", async (c) => {
     LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
     WHERE c.id = ${canvasId}
       AND c.deleted_at IS NULL
-      AND (c.owner_id = ${user.uid} OR cc.user_id = ${user.uid})
+      AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
   `;
 
   if (canvasCheck.length === 0) {
+    console.log(`❌ [ASSETS] Canvas not found or access denied: ${canvasId}`);
     throw new NotFoundError("Canvas not found or access denied");
   }
 
   const result = await sql`
     SELECT * FROM assets
     WHERE canvas_id = ${canvasId}
-    ORDER BY created_at DESC
+    ORDER BY z_index ASC, created_at ASC
   `;
 
+  console.log(`✅ [ASSETS] Found ${result.length} assets`);
   return c.json(result);
 });
 
@@ -45,38 +48,53 @@ assets.post("/", async (c) => {
 
   const validated = createAssetSchema.parse(body);
 
+  console.log(
+    `➕ [ASSETS] Creating asset "${validated.name}" for canvas ${validated.canvas_id}`,
+  );
+
   // Verify user owns the canvas
   const canvasCheck = await sql`
-    SELECT id, asset_count 
+    SELECT id
     FROM canvases
     WHERE id = ${validated.canvas_id}
-      AND owner_id = ${user.uid}
+      AND owner_id = ${user.id}
       AND deleted_at IS NULL
   `;
 
   if (canvasCheck.length === 0) {
+    console.log(`❌ [ASSETS] Canvas not found or access denied`);
     throw new NotFoundError("Canvas not found or access denied");
   }
 
-  // Check asset limit (50 per canvas)
-  if (canvasCheck[0].asset_count >= 50) {
+  // TODO: Check asset limit (50 per canvas)
+  const assetCount = await sql`
+    SELECT COUNT(*) as count
+    FROM assets
+    WHERE canvas_id = ${validated.canvas_id}
+  `;
+
+  if (Number(assetCount[0].count) >= 50) {
+    console.log(`❌ [ASSETS] Canvas has reached maximum of 50 assets`);
     throw new ValidationError("Canvas has reached the maximum of 50 assets");
   }
 
+  // TODO: R2 upload will happen here
+  // For now, we accept the r2_url from the client
+
   const result = await sql`
     INSERT INTO assets (
-      canvas_id, name, file_type, asset_category, 
-      file_size, r2_key, r2_url, thumbnail_url, metadata
+      canvas_id, name, file_type, r2_url,
+      x, y, width, height, z_index
     )
     VALUES (
-      ${validated.canvas_id}, ${validated.name}, ${validated.file_type}, 
-      ${validated.asset_category}, ${validated.file_size}, ${validated.r2_key}, 
-      ${validated.r2_url}, ${validated.thumbnail_url || null}, 
-      ${validated.metadata ? JSON.stringify(validated.metadata) : "{}"}
+      ${validated.canvas_id}, ${validated.name}, ${validated.file_type},
+      ${validated.r2_url}, ${validated.x}, ${validated.y},
+      ${validated.width}, ${validated.height}, ${validated.z_index}
     )
     RETURNING *
   `;
 
+  console.log(`✅ [ASSETS] Asset created:`, result[0].id);
   return c.json(result[0], 201);
 });
 
@@ -85,6 +103,8 @@ assets.get("/:id", async (c) => {
   const user = c.get("user");
   const assetId = c.req.param("id");
 
+  console.log(`🔍 [ASSETS] Fetching asset ${assetId}`);
+
   const result = await sql`
     SELECT a.* 
     FROM assets a
@@ -92,13 +112,15 @@ assets.get("/:id", async (c) => {
     LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
     WHERE a.id = ${assetId}
       AND c.deleted_at IS NULL
-      AND (c.owner_id = ${user.uid} OR cc.user_id = ${user.uid})
+      AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [ASSETS] Asset not found: ${assetId}`);
     throw new NotFoundError("Asset not found");
   }
 
+  console.log(`✅ [ASSETS] Asset found: ${result[0].name}`);
   return c.json(result[0]);
 });
 
@@ -110,51 +132,57 @@ assets.patch("/:id", async (c) => {
 
   const validated = updateAssetSchema.parse(body);
 
-  let result;
+  console.log(`✏️ [ASSETS] Updating asset ${assetId}`, validated);
 
-  if (validated.name && validated.metadata) {
-    result = await sql`
-      UPDATE assets a
-      SET name = ${validated.name},
-          metadata = ${JSON.stringify(validated.metadata)},
-          updated_at = NOW()
-      FROM canvases c
-      WHERE a.id = ${assetId}
-        AND a.canvas_id = c.id
-        AND c.owner_id = ${user.uid}
-        AND c.deleted_at IS NULL
-      RETURNING a.*
-    `;
-  } else if (validated.name) {
-    result = await sql`
-      UPDATE assets a
-      SET name = ${validated.name},
-          updated_at = NOW()
-      FROM canvases c
-      WHERE a.id = ${assetId}
-        AND a.canvas_id = c.id
-        AND c.owner_id = ${user.uid}
-        AND c.deleted_at IS NULL
-      RETURNING a.*
-    `;
-  } else if (validated.metadata) {
-    result = await sql`
-      UPDATE assets a
-      SET metadata = ${JSON.stringify(validated.metadata)},
-          updated_at = NOW()
-      FROM canvases c
-      WHERE a.id = ${assetId}
-        AND a.canvas_id = c.id
-        AND c.owner_id = ${user.uid}
-        AND c.deleted_at IS NULL
-      RETURNING a.*
-    `;
+  const setClauses: string[] = ["updated_at = NOW()"];
+  const values: any[] = [];
+
+  if (validated.name !== undefined) {
+    setClauses.push(`name = $${values.length + 1}`);
+    values.push(validated.name);
+  }
+  if (validated.x !== undefined) {
+    setClauses.push(`x = $${values.length + 1}`);
+    values.push(validated.x);
+  }
+  if (validated.y !== undefined) {
+    setClauses.push(`y = $${values.length + 1}`);
+    values.push(validated.y);
+  }
+  if (validated.width !== undefined) {
+    setClauses.push(`width = $${values.length + 1}`);
+    values.push(validated.width);
+  }
+  if (validated.height !== undefined) {
+    setClauses.push(`height = $${values.length + 1}`);
+    values.push(validated.height);
+  }
+  if (validated.z_index !== undefined) {
+    setClauses.push(`z_index = $${values.length + 1}`);
+    values.push(validated.z_index);
   }
 
-  if (!result || result.length === 0) {
+  if (setClauses.length === 1) {
+    throw new ValidationError("No fields to update");
+  }
+
+  const result = await sql`
+    UPDATE assets a
+    SET ${sql.unsafe(setClauses.join(", "))}
+    FROM canvases c
+    WHERE a.id = ${assetId}
+      AND a.canvas_id = c.id
+      AND c.owner_id = ${user.id}
+      AND c.deleted_at IS NULL
+    RETURNING a.*
+  `;
+
+  if (result.length === 0) {
+    console.log(`❌ [ASSETS] Asset not found or unauthorized: ${assetId}`);
     throw new NotFoundError("Asset not found or unauthorized");
   }
 
+  console.log(`✅ [ASSETS] Asset updated: ${result[0].name}`);
   return c.json(result[0]);
 });
 
@@ -163,20 +191,26 @@ assets.delete("/:id", async (c) => {
   const user = c.get("user");
   const assetId = c.req.param("id");
 
+  console.log(`🗑️ [ASSETS] Deleting asset ${assetId}`);
+
+  // TODO: Delete from R2 storage
+
   const result = await sql`
     DELETE FROM assets a
     USING canvases c
     WHERE a.id = ${assetId}
       AND a.canvas_id = c.id
-      AND c.owner_id = ${user.uid}
+      AND c.owner_id = ${user.id}
       AND c.deleted_at IS NULL
-    RETURNING a.id, a.canvas_id
+    RETURNING a.id, a.name
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [ASSETS] Asset not found or unauthorized: ${assetId}`);
     throw new NotFoundError("Asset not found or unauthorized");
   }
 
+  console.log(`✅ [ASSETS] Asset deleted: ${result[0].name}`);
   return c.json({ success: true, id: result[0].id });
 });
 

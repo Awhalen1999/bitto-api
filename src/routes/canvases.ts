@@ -7,13 +7,12 @@ import type { Variables } from "../types/index.js";
 
 const canvases = new Hono<{ Variables: Variables }>();
 
-// Apply auth middleware to all routes
 canvases.use("*", authMiddleware);
 
-// Helper function for sort clause
+// Helper: sort clause
 function getSortClause(sort: string): string {
   const sortMap: Record<string, string> = {
-    "last-modified": "last_edited_at DESC",
+    "last-modified": "updated_at DESC",
     "name-asc": "name ASC",
     "name-desc": "name DESC",
     newest: "created_at DESC",
@@ -21,19 +20,16 @@ function getSortClause(sort: string): string {
   return sortMap[sort] || sortMap["last-modified"];
 }
 
-// Default canvas data structure
-const DEFAULT_CANVAS_DATA = {
-  version: 1,
-  objects: [],
-  viewport: { x: 0, y: 0, scale: 1 },
-};
-
 // Get canvases
 canvases.get("/", async (c) => {
   const user = c.get("user");
   const view = c.req.query("view") || "all";
   const sort = c.req.query("sort") || "last-modified";
   const sortClause = getSortClause(sort);
+
+  console.log(
+    `📋 [CANVASES] Fetching canvases for user ${user.id}, view: ${view}, sort: ${sort}`,
+  );
 
   let result;
 
@@ -44,7 +40,7 @@ canvases.get("/", async (c) => {
         FROM canvases c
         LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
         WHERE c.deleted_at IS NULL
-          AND (c.owner_id = ${user.uid} OR cc.user_id = ${user.uid})
+          AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
         ORDER BY ${sql.unsafe(sortClause)}
       `;
       break;
@@ -52,7 +48,7 @@ canvases.get("/", async (c) => {
     case "my-files":
       result = await sql`
         SELECT * FROM canvases
-        WHERE owner_id = ${user.uid}
+        WHERE owner_id = ${user.id}
           AND deleted_at IS NULL
         ORDER BY ${sql.unsafe(sortClause)}
       `;
@@ -63,8 +59,8 @@ canvases.get("/", async (c) => {
         SELECT c.* 
         FROM canvases c
         INNER JOIN canvas_collaborators cc ON c.id = cc.canvas_id
-        WHERE cc.user_id = ${user.uid}
-          AND c.owner_id != ${user.uid}
+        WHERE cc.user_id = ${user.id}
+          AND c.owner_id != ${user.id}
           AND c.deleted_at IS NULL
         ORDER BY ${sql.unsafe(sortClause)}
       `;
@@ -73,7 +69,7 @@ canvases.get("/", async (c) => {
     case "trash":
       result = await sql`
         SELECT * FROM canvases
-        WHERE owner_id = ${user.uid}
+        WHERE owner_id = ${user.id}
           AND deleted_at IS NOT NULL
         ORDER BY deleted_at DESC
       `;
@@ -83,6 +79,7 @@ canvases.get("/", async (c) => {
       throw new ValidationError("Invalid view parameter");
   }
 
+  console.log(`✅ [CANVASES] Found ${result.length} canvases`);
   return c.json(result);
 });
 
@@ -93,17 +90,15 @@ canvases.post("/", async (c) => {
 
   const { name } = createCanvasSchema.parse(body);
 
+  console.log(`➕ [CANVASES] Creating canvas "${name}" for user ${user.id}`);
+
   const result = await sql`
-    INSERT INTO canvases (name, owner_id, last_edited_by, canvas_data)
-    VALUES (
-      ${name}, 
-      ${user.uid}, 
-      ${user.uid},
-      ${JSON.stringify(DEFAULT_CANVAS_DATA)}
-    )
+    INSERT INTO canvases (name, owner_id)
+    VALUES (${name}, ${user.id})
     RETURNING *
   `;
 
+  console.log(`✅ [CANVASES] Canvas created:`, result[0].id);
   return c.json(result[0], 201);
 });
 
@@ -112,19 +107,23 @@ canvases.get("/:id", async (c) => {
   const user = c.get("user");
   const canvasId = c.req.param("id");
 
+  console.log(`🔍 [CANVASES] Fetching canvas ${canvasId} for user ${user.id}`);
+
   const result = await sql`
     SELECT c.* 
     FROM canvases c
     LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
     WHERE c.id = ${canvasId}
       AND c.deleted_at IS NULL
-      AND (c.owner_id = ${user.uid} OR cc.user_id = ${user.uid})
+      AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [CANVASES] Canvas not found: ${canvasId}`);
     throw new NotFoundError("Canvas not found");
   }
 
+  console.log(`✅ [CANVASES] Canvas found: ${result[0].name}`);
   return c.json(result[0]);
 });
 
@@ -136,49 +135,47 @@ canvases.patch("/:id", async (c) => {
 
   const validated = updateCanvasSchema.parse(body);
 
-  // Build update based on what's provided
-  let result;
+  console.log(`✏️ [CANVASES] Updating canvas ${canvasId}`, validated);
 
-  if (validated.name && validated.canvas_data) {
-    result = await sql`
-      UPDATE canvases
-      SET name = ${validated.name},
-          canvas_data = ${JSON.stringify(validated.canvas_data)},
-          last_edited_by = ${user.uid},
-          last_edited_at = NOW()
-      WHERE id = ${canvasId}
-        AND owner_id = ${user.uid}
-        AND deleted_at IS NULL
-      RETURNING *
-    `;
-  } else if (validated.name) {
-    result = await sql`
-      UPDATE canvases
-      SET name = ${validated.name},
-          last_edited_by = ${user.uid},
-          last_edited_at = NOW()
-      WHERE id = ${canvasId}
-        AND owner_id = ${user.uid}
-        AND deleted_at IS NULL
-      RETURNING *
-    `;
-  } else if (validated.canvas_data) {
-    result = await sql`
-      UPDATE canvases
-      SET canvas_data = ${JSON.stringify(validated.canvas_data)},
-          last_edited_by = ${user.uid},
-          last_edited_at = NOW()
-      WHERE id = ${canvasId}
-        AND owner_id = ${user.uid}
-        AND deleted_at IS NULL
-      RETURNING *
-    `;
+  const setClauses: string[] = ["updated_at = NOW()"];
+  const values: any[] = [];
+
+  if (validated.name !== undefined) {
+    setClauses.push(`name = $${values.length + 1}`);
+    values.push(validated.name);
+  }
+  if (validated.viewport_x !== undefined) {
+    setClauses.push(`viewport_x = $${values.length + 1}`);
+    values.push(validated.viewport_x);
+  }
+  if (validated.viewport_y !== undefined) {
+    setClauses.push(`viewport_y = $${values.length + 1}`);
+    values.push(validated.viewport_y);
+  }
+  if (validated.viewport_scale !== undefined) {
+    setClauses.push(`viewport_scale = $${values.length + 1}`);
+    values.push(validated.viewport_scale);
   }
 
-  if (!result || result.length === 0) {
+  if (setClauses.length === 1) {
+    throw new ValidationError("No fields to update");
+  }
+
+  const result = await sql`
+    UPDATE canvases
+    SET ${sql.unsafe(setClauses.join(", "))}
+    WHERE id = ${canvasId}
+      AND owner_id = ${user.id}
+      AND deleted_at IS NULL
+    RETURNING *
+  `;
+
+  if (result.length === 0) {
+    console.log(`❌ [CANVASES] Canvas not found or unauthorized: ${canvasId}`);
     throw new NotFoundError("Canvas not found or unauthorized");
   }
 
+  console.log(`✅ [CANVASES] Canvas updated: ${result[0].name}`);
   return c.json(result[0]);
 });
 
@@ -187,40 +184,48 @@ canvases.delete("/:id", async (c) => {
   const user = c.get("user");
   const canvasId = c.req.param("id");
 
+  console.log(`🗑️ [CANVASES] Soft deleting canvas ${canvasId}`);
+
   const result = await sql`
     UPDATE canvases
     SET deleted_at = NOW()
     WHERE id = ${canvasId}
-      AND owner_id = ${user.uid}
+      AND owner_id = ${user.id}
       AND deleted_at IS NULL
     RETURNING *
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [CANVASES] Canvas not found: ${canvasId}`);
     throw new NotFoundError("Canvas not found or already deleted");
   }
 
+  console.log(`✅ [CANVASES] Canvas moved to trash: ${result[0].name}`);
   return c.json(result[0]);
 });
 
-// Restore canvas from trash
+// Restore canvas
 canvases.post("/:id/restore", async (c) => {
   const user = c.get("user");
   const canvasId = c.req.param("id");
 
+  console.log(`♻️ [CANVASES] Restoring canvas ${canvasId}`);
+
   const result = await sql`
     UPDATE canvases
-    SET deleted_at = NULL
+    SET deleted_at = NULL, updated_at = NOW()
     WHERE id = ${canvasId}
-      AND owner_id = ${user.uid}
+      AND owner_id = ${user.id}
       AND deleted_at IS NOT NULL
     RETURNING *
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [CANVASES] Canvas not found in trash: ${canvasId}`);
     throw new NotFoundError("Canvas not found in trash");
   }
 
+  console.log(`✅ [CANVASES] Canvas restored: ${result[0].name}`);
   return c.json(result[0]);
 });
 
@@ -229,17 +234,21 @@ canvases.delete("/:id/permanent", async (c) => {
   const user = c.get("user");
   const canvasId = c.req.param("id");
 
+  console.log(`💥 [CANVASES] Permanently deleting canvas ${canvasId}`);
+
   const result = await sql`
     DELETE FROM canvases
     WHERE id = ${canvasId}
-      AND owner_id = ${user.uid}
-    RETURNING id
+      AND owner_id = ${user.id}
+    RETURNING id, name
   `;
 
   if (result.length === 0) {
+    console.log(`❌ [CANVASES] Canvas not found: ${canvasId}`);
     throw new NotFoundError("Canvas not found");
   }
 
+  console.log(`✅ [CANVASES] Canvas permanently deleted: ${result[0].name}`);
   return c.json({ success: true, id: result[0].id });
 });
 

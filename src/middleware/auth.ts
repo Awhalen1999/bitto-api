@@ -1,5 +1,6 @@
 import type { Context, Next } from "hono";
 import admin from "firebase-admin";
+import { sql } from "../db/client.js";
 import { UnauthorizedError } from "../lib/errors.js";
 import type { Variables } from "../types/index.js";
 
@@ -10,6 +11,7 @@ export async function authMiddleware(
   const authHeader = c.req.header("Authorization");
 
   if (!authHeader?.startsWith("Bearer ")) {
+    console.log("❌ [AUTH] Missing or invalid authorization header");
     throw new UnauthorizedError("Missing or invalid authorization header");
   }
 
@@ -18,13 +20,29 @@ export async function authMiddleware(
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
 
+    // Get user from database by firebase_uid
+    const userResult = await sql`
+      SELECT id, firebase_uid, email, display_name
+      FROM users
+      WHERE firebase_uid = ${decodedToken.uid}
+      LIMIT 1
+    `;
+
+    if (userResult.length === 0) {
+      console.log("❌ [AUTH] User not found in database:", decodedToken.uid);
+      throw new UnauthorizedError("User not found");
+    }
+
     c.set("user", {
-      uid: decodedToken.uid,
-      email: decodedToken.email!,
+      id: userResult[0].id,
+      firebaseUid: userResult[0].firebase_uid,
+      email: userResult[0].email,
     });
 
+    console.log("✅ [AUTH] User authenticated:", userResult[0].email);
     await next();
   } catch (error) {
+    console.log("❌ [AUTH] Token verification failed:", error);
     throw new UnauthorizedError("Invalid or expired token");
   }
 }
