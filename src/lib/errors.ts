@@ -1,8 +1,9 @@
+/** Custom API errors with status codes */
 export class ApiError extends Error {
   constructor(
     public statusCode: number,
     message: string,
-    public details?: any,
+    public details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -24,7 +25,7 @@ export class NotFoundError extends ApiError {
 }
 
 export class ValidationError extends ApiError {
-  constructor(message = "Validation failed", details?: any) {
+  constructor(message = "Validation failed", details?: unknown) {
     super(400, message, details);
     this.name = "ValidationError";
   }

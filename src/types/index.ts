@@ -1,19 +1,15 @@
 import type { Context } from "hono";
 
-// Auth types
 export interface User {
   id: string;
   firebaseUid: string;
   email: string;
 }
 
-export type Variables = {
-  user: User;
-};
+export type Variables = { user: User };
 
 export type AuthContext = Context<{ Variables: Variables }>;
 
-// File types
 export interface File {
   id: string;
   owner_id: string;
@@ -24,18 +20,28 @@ export interface File {
   deleted_at: string | null;
 }
 
-// Asset types
+/** File metadata only. Placement in canvas_elements. */
 export interface Asset {
   id: string;
   file_id: string;
   name: string;
   file_type: string;
   r2_url: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  z_index: number;
+  thumbnail_url: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CanvasElementType = "rectangle" | "line" | "text" | "asset";
+
+export interface CanvasElement {
+  id: string;
+  file_id: string;
+  type: CanvasElementType;
+  sort_index: number;
+  props: Record<string, unknown>;
+  asset_id: string | null;
   created_at: string;
   updated_at: string;
 }

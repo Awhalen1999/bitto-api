@@ -1,24 +1,19 @@
 import { z } from "zod";
 
+/** Asset = file metadata only. Placement lives in canvas_elements. */
 export const createAssetSchema = z.object({
   file_id: z.string().uuid(),
   name: z.string().min(1).max(255).trim(),
-  file_type: z.string().min(1), // MIME type: "image/png"
+  file_type: z.string().min(1),
   r2_url: z.string().url(),
-  x: z.number().default(0),
-  y: z.number().default(0),
-  width: z.number().positive().default(100),
-  height: z.number().positive().default(100),
-  z_index: z.number().int().default(0),
+  thumbnail_url: z.string().url().optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 export const updateAssetSchema = z.object({
   name: z.string().min(1).max(255).trim().optional(),
-  x: z.number().optional(),
-  y: z.number().optional(),
-  width: z.number().positive().optional(),
-  height: z.number().positive().optional(),
-  z_index: z.number().int().optional(),
+  thumbnail_url: z.string().url().optional(),
+  metadata: z.record(z.string(), z.any()).optional(),
 });
 
 export type CreateAssetInput = z.infer<typeof createAssetSchema>;

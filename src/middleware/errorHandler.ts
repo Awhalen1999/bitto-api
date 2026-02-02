@@ -1,39 +1,33 @@
 import type { Context } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ZodError } from "zod";
 import { ApiError } from "../lib/errors.js";
+import { log } from "../lib/logger.js";
 
 export function errorHandler(err: Error, c: Context) {
-  console.error("Error:", {
+  const isDev = process.env.NODE_ENV === "development";
+
+  log("error", err.message, {
     name: err.name,
-    message: err.message,
-    stack: process.env.NODE_ENV === "development" ? err.stack : undefined,
+    ...(isDev && { stack: err.stack }),
   });
 
   if (err instanceof ApiError) {
     return c.json(
       {
         error: err.message,
-        ...(err.details && { details: err.details }),
+        ...(err.details != null && { details: err.details }),
       },
-      err.statusCode as any,
+      err.statusCode as ContentfulStatusCode,
     );
   }
 
   if (err instanceof ZodError) {
     return c.json(
-      {
-        error: "Validation failed",
-        details: err.issues,
-      },
+      { error: "Validation failed", details: err.issues },
       400,
     );
   }
 
-  // Default error
-  return c.json(
-    {
-      error: "Internal server error",
-    },
-    500,
-  );
+  return c.json({ error: "Internal server error" }, 500);
 }

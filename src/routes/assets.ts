@@ -3,110 +3,76 @@ import { sql } from "../db/client.js";
 import { authMiddleware } from "../middleware/auth.js";
 import { createAssetSchema, updateAssetSchema } from "../schemas/asset.js";
 import { NotFoundError, ValidationError } from "../lib/errors.js";
+import { log } from "../lib/logger.js";
+import { userCanAccessFile, userOwnsFile } from "../lib/db.js";
 import type { Variables } from "../types/index.js";
 
-const assets = new Hono<{ Variables: Variables }>();
+const ASSET_LIMIT_PER_FILE = 50;
 
+const assets = new Hono<{ Variables: Variables }>();
 assets.use("*", authMiddleware);
 
-// Get all assets for a file
+/** List assets for a file (library). Placement is in canvas_elements. */
 assets.get("/file/:fileId", async (c) => {
   const user = c.get("user");
   const fileId = c.req.param("fileId");
 
-  console.log(`📦 [ASSETS] Fetching assets for file ${fileId}`);
-
-  // Verify user has access to file
-  const fileCheck = await sql`
-    SELECT f.id 
-    FROM files f
-    LEFT JOIN file_collaborators fc ON f.id = fc.file_id
-    WHERE f.id = ${fileId}
-      AND f.deleted_at IS NULL
-      AND (f.owner_id = ${user.id} OR fc.user_id = ${user.id})
-  `;
-
-  if (fileCheck.length === 0) {
-    console.log(`❌ [ASSETS] File not found or access denied: ${fileId}`);
+  const canAccess = await userCanAccessFile(fileId, user.id);
+  if (!canAccess) {
     throw new NotFoundError("File not found or access denied");
   }
 
   const result = await sql`
     SELECT * FROM assets
     WHERE file_id = ${fileId}
-    ORDER BY z_index ASC, created_at ASC
+    ORDER BY created_at ASC
   `;
 
-  console.log(`✅ [ASSETS] Found ${result.length} assets`);
+  log("assets", "List", { fileId, count: result.length });
   return c.json(result);
 });
 
-// Create asset
 assets.post("/", async (c) => {
   const user = c.get("user");
   const body = await c.req.json();
-
   const validated = createAssetSchema.parse(body);
 
-  console.log(
-    `➕ [ASSETS] Creating asset "${validated.name}" for file ${validated.file_id}`,
-  );
-
-  // Verify user owns the file
-  const fileCheck = await sql`
-    SELECT id
-    FROM files
-    WHERE id = ${validated.file_id}
-      AND owner_id = ${user.id}
-      AND deleted_at IS NULL
-  `;
-
-  if (fileCheck.length === 0) {
-    console.log(`❌ [ASSETS] File not found or access denied`);
+  const owns = await userOwnsFile(validated.file_id, user.id);
+  if (!owns) {
     throw new NotFoundError("File not found or access denied");
   }
 
-  // TODO: Check asset limit (50 per file)
-  const assetCount = await sql`
-    SELECT COUNT(*) as count
-    FROM assets
-    WHERE file_id = ${validated.file_id}
+  const [{ count }] = await sql`
+    SELECT COUNT(*)::int as count FROM assets WHERE file_id = ${validated.file_id}
   `;
-
-  if (Number(assetCount[0].count) >= 50) {
-    console.log(`❌ [ASSETS] File has reached maximum of 50 assets`);
-    throw new ValidationError("File has reached the maximum of 50 assets");
+  if (count >= ASSET_LIMIT_PER_FILE) {
+    throw new ValidationError(`File has reached maximum of ${ASSET_LIMIT_PER_FILE} assets`);
   }
 
-  // TODO: R2 upload will happen here
-  // For now, we accept the r2_url from the client
-
-  const result = await sql`
-    INSERT INTO assets (
-      file_id, name, file_type, r2_url,
-      x, y, width, height, z_index
-    )
+  const [asset] = await sql`
+    INSERT INTO assets (file_id, name, file_type, r2_url, thumbnail_url, metadata)
     VALUES (
-      ${validated.file_id}, ${validated.name}, ${validated.file_type},
-      ${validated.r2_url}, ${validated.x}, ${validated.y},
-      ${validated.width}, ${validated.height}, ${validated.z_index}
+      ${validated.file_id},
+      ${validated.name},
+      ${validated.file_type},
+      ${validated.r2_url},
+      ${validated.thumbnail_url ?? null},
+      ${validated.metadata ? JSON.stringify(validated.metadata) : "{}"}
     )
     RETURNING *
   `;
 
-  console.log(`✅ [ASSETS] Asset created:`, result[0].id);
-  return c.json(result[0], 201);
+  log("assets", "Created", { id: asset.id, fileId: validated.file_id });
+  return c.json(asset, 201);
 });
 
-// Get single asset
+/** Get single asset (e.g. when user clicks for details, r2_url, etc.) */
 assets.get("/:id", async (c) => {
   const user = c.get("user");
   const assetId = c.req.param("id");
 
-  console.log(`🔍 [ASSETS] Fetching asset ${assetId}`);
-
-  const result = await sql`
-    SELECT a.* 
+  const [asset] = await sql`
+    SELECT a.*
     FROM assets a
     INNER JOIN files f ON a.file_id = f.id
     LEFT JOIN file_collaborators fc ON f.id = fc.file_id
@@ -115,103 +81,86 @@ assets.get("/:id", async (c) => {
       AND (f.owner_id = ${user.id} OR fc.user_id = ${user.id})
   `;
 
-  if (result.length === 0) {
-    console.log(`❌ [ASSETS] Asset not found: ${assetId}`);
+  if (!asset) {
     throw new NotFoundError("Asset not found");
   }
 
-  console.log(`✅ [ASSETS] Asset found: ${result[0].name}`);
-  return c.json(result[0]);
+  return c.json(asset);
 });
 
-// Update asset
 assets.patch("/:id", async (c) => {
   const user = c.get("user");
   const assetId = c.req.param("id");
   const body = await c.req.json();
-
   const validated = updateAssetSchema.parse(body);
 
-  console.log(`✏️ [ASSETS] Updating asset ${assetId}`, validated);
-
-  const setClauses: string[] = ["updated_at = NOW()"];
-  const values: any[] = [];
+  const updates: string[] = ["updated_at = NOW()"];
+  const params: unknown[] = [];
+  let i = 1;
 
   if (validated.name !== undefined) {
-    setClauses.push(`name = $${values.length + 1}`);
-    values.push(validated.name);
+    updates.push(`name = $${i++}`);
+    params.push(validated.name);
   }
-  if (validated.x !== undefined) {
-    setClauses.push(`x = $${values.length + 1}`);
-    values.push(validated.x);
+  if (validated.thumbnail_url !== undefined) {
+    updates.push(`thumbnail_url = $${i++}`);
+    params.push(validated.thumbnail_url);
   }
-  if (validated.y !== undefined) {
-    setClauses.push(`y = $${values.length + 1}`);
-    values.push(validated.y);
-  }
-  if (validated.width !== undefined) {
-    setClauses.push(`width = $${values.length + 1}`);
-    values.push(validated.width);
-  }
-  if (validated.height !== undefined) {
-    setClauses.push(`height = $${values.length + 1}`);
-    values.push(validated.height);
-  }
-  if (validated.z_index !== undefined) {
-    setClauses.push(`z_index = $${values.length + 1}`);
-    values.push(validated.z_index);
+  if (validated.metadata !== undefined) {
+    updates.push(`metadata = $${i++}::jsonb`);
+    params.push(JSON.stringify(validated.metadata));
   }
 
-  if (setClauses.length === 1) {
+  if (updates.length === 1) {
     throw new ValidationError("No fields to update");
   }
 
-  const result = await sql`
+  params.push(assetId, user.id);
+
+  const result = await sql.query(
+    `
     UPDATE assets a
-    SET ${sql.unsafe(setClauses.join(", "))}
+    SET ${updates.join(", ")}
     FROM files f
-    WHERE a.id = ${assetId}
+    LEFT JOIN file_collaborators fc ON f.id = fc.file_id
+    WHERE a.id = $${i++}
       AND a.file_id = f.id
-      AND f.owner_id = ${user.id}
       AND f.deleted_at IS NULL
+      AND (f.owner_id = $${i} OR fc.user_id = $${i})
     RETURNING a.*
-  `;
+    `,
+    params,
+  );
 
   if (result.length === 0) {
-    console.log(`❌ [ASSETS] Asset not found or unauthorized: ${assetId}`);
     throw new NotFoundError("Asset not found or unauthorized");
   }
 
-  console.log(`✅ [ASSETS] Asset updated: ${result[0].name}`);
+  log("assets", "Updated", { id: assetId });
   return c.json(result[0]);
 });
 
-// Delete asset
 assets.delete("/:id", async (c) => {
   const user = c.get("user");
   const assetId = c.req.param("id");
 
-  console.log(`🗑️ [ASSETS] Deleting asset ${assetId}`);
-
-  // TODO: Delete from R2 storage
-
-  const result = await sql`
+  const [asset] = await sql`
     DELETE FROM assets a
     USING files f
+    LEFT JOIN file_collaborators fc ON f.id = fc.file_id
     WHERE a.id = ${assetId}
       AND a.file_id = f.id
-      AND f.owner_id = ${user.id}
       AND f.deleted_at IS NULL
+      AND (f.owner_id = ${user.id} OR fc.user_id = ${user.id})
     RETURNING a.id, a.name
   `;
 
-  if (result.length === 0) {
-    console.log(`❌ [ASSETS] Asset not found or unauthorized: ${assetId}`);
+  if (!asset) {
     throw new NotFoundError("Asset not found or unauthorized");
   }
 
-  console.log(`✅ [ASSETS] Asset deleted: ${result[0].name}`);
-  return c.json({ success: true, id: result[0].id });
+  log("assets", "Deleted", { id: asset.id });
+  return c.json({ success: true, id: asset.id });
 });
 
 export default assets;
