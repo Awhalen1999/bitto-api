@@ -7,8 +7,8 @@ import "dotenv/config";
 import { requestLogger } from "./middleware/logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import authRoutes from "./routes/auth.js";
-import canvasRoutes from "./routes/canvases.js";
-import assetRoutes from "./routes/assets.js"; // NEW
+import fileRoutes from "./routes/files.js";
+import assetRoutes from "./routes/assets.js";
 
 // Initialize Firebase Admin
 if (!admin.apps.length) {
@@ -39,8 +39,8 @@ app.get("/health", (c) => {
 
 // API routes (protected)
 app.route("/api/auth", authRoutes);
-app.route("/api/canvases", canvasRoutes);
-app.route("/api/assets", assetRoutes); // NEW
+app.route("/api/files", fileRoutes);
+app.route("/api/assets", assetRoutes);
 
 // Error handlers
 app.notFound((c) => c.json({ error: "Not found" }, 404));
