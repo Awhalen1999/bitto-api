@@ -144,18 +144,6 @@ canvases.patch("/:id", async (c) => {
     setClauses.push(`name = $${values.length + 1}`);
     values.push(validated.name);
   }
-  if (validated.viewport_x !== undefined) {
-    setClauses.push(`viewport_x = $${values.length + 1}`);
-    values.push(validated.viewport_x);
-  }
-  if (validated.viewport_y !== undefined) {
-    setClauses.push(`viewport_y = $${values.length + 1}`);
-    values.push(validated.viewport_y);
-  }
-  if (validated.viewport_scale !== undefined) {
-    setClauses.push(`viewport_scale = $${values.length + 1}`);
-    values.push(validated.viewport_scale);
-  }
 
   if (setClauses.length === 1) {
     throw new ValidationError("No fields to update");

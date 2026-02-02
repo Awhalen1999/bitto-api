@@ -18,9 +18,6 @@ export interface Canvas {
   id: string;
   owner_id: string;
   name: string;
-  viewport_x: number;
-  viewport_y: number;
-  viewport_scale: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
