@@ -2,7 +2,7 @@ import type { Context } from "hono";
 
 // Auth types
 export interface User {
-  id: string; // Internal database UUID
+  id: string;
   firebaseUid: string;
   email: string;
 }
@@ -13,11 +13,12 @@ export type Variables = {
 
 export type AuthContext = Context<{ Variables: Variables }>;
 
-// Canvas types
-export interface Canvas {
+// File types
+export interface File {
   id: string;
   owner_id: string;
   name: string;
+  file_type: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -26,7 +27,7 @@ export interface Canvas {
 // Asset types
 export interface Asset {
   id: string;
-  canvas_id: string;
+  file_id: string;
   name: string;
   file_type: string;
   r2_url: string;

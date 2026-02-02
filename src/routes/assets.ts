@@ -9,31 +9,31 @@ const assets = new Hono<{ Variables: Variables }>();
 
 assets.use("*", authMiddleware);
 
-// Get all assets for a canvas
-assets.get("/canvas/:canvasId", async (c) => {
+// Get all assets for a file
+assets.get("/file/:fileId", async (c) => {
   const user = c.get("user");
-  const canvasId = c.req.param("canvasId");
+  const fileId = c.req.param("fileId");
 
-  console.log(`📦 [ASSETS] Fetching assets for canvas ${canvasId}`);
+  console.log(`📦 [ASSETS] Fetching assets for file ${fileId}`);
 
-  // Verify user has access to canvas
-  const canvasCheck = await sql`
-    SELECT c.id 
-    FROM canvases c
-    LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
-    WHERE c.id = ${canvasId}
-      AND c.deleted_at IS NULL
-      AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
+  // Verify user has access to file
+  const fileCheck = await sql`
+    SELECT f.id 
+    FROM files f
+    LEFT JOIN file_collaborators fc ON f.id = fc.file_id
+    WHERE f.id = ${fileId}
+      AND f.deleted_at IS NULL
+      AND (f.owner_id = ${user.id} OR fc.user_id = ${user.id})
   `;
 
-  if (canvasCheck.length === 0) {
-    console.log(`❌ [ASSETS] Canvas not found or access denied: ${canvasId}`);
-    throw new NotFoundError("Canvas not found or access denied");
+  if (fileCheck.length === 0) {
+    console.log(`❌ [ASSETS] File not found or access denied: ${fileId}`);
+    throw new NotFoundError("File not found or access denied");
   }
 
   const result = await sql`
     SELECT * FROM assets
-    WHERE canvas_id = ${canvasId}
+    WHERE file_id = ${fileId}
     ORDER BY z_index ASC, created_at ASC
   `;
 
@@ -49,33 +49,33 @@ assets.post("/", async (c) => {
   const validated = createAssetSchema.parse(body);
 
   console.log(
-    `➕ [ASSETS] Creating asset "${validated.name}" for canvas ${validated.canvas_id}`,
+    `➕ [ASSETS] Creating asset "${validated.name}" for file ${validated.file_id}`,
   );
 
-  // Verify user owns the canvas
-  const canvasCheck = await sql`
+  // Verify user owns the file
+  const fileCheck = await sql`
     SELECT id
-    FROM canvases
-    WHERE id = ${validated.canvas_id}
+    FROM files
+    WHERE id = ${validated.file_id}
       AND owner_id = ${user.id}
       AND deleted_at IS NULL
   `;
 
-  if (canvasCheck.length === 0) {
-    console.log(`❌ [ASSETS] Canvas not found or access denied`);
-    throw new NotFoundError("Canvas not found or access denied");
+  if (fileCheck.length === 0) {
+    console.log(`❌ [ASSETS] File not found or access denied`);
+    throw new NotFoundError("File not found or access denied");
   }
 
-  // TODO: Check asset limit (50 per canvas)
+  // TODO: Check asset limit (50 per file)
   const assetCount = await sql`
     SELECT COUNT(*) as count
     FROM assets
-    WHERE canvas_id = ${validated.canvas_id}
+    WHERE file_id = ${validated.file_id}
   `;
 
   if (Number(assetCount[0].count) >= 50) {
-    console.log(`❌ [ASSETS] Canvas has reached maximum of 50 assets`);
-    throw new ValidationError("Canvas has reached the maximum of 50 assets");
+    console.log(`❌ [ASSETS] File has reached maximum of 50 assets`);
+    throw new ValidationError("File has reached the maximum of 50 assets");
   }
 
   // TODO: R2 upload will happen here
@@ -83,11 +83,11 @@ assets.post("/", async (c) => {
 
   const result = await sql`
     INSERT INTO assets (
-      canvas_id, name, file_type, r2_url,
+      file_id, name, file_type, r2_url,
       x, y, width, height, z_index
     )
     VALUES (
-      ${validated.canvas_id}, ${validated.name}, ${validated.file_type},
+      ${validated.file_id}, ${validated.name}, ${validated.file_type},
       ${validated.r2_url}, ${validated.x}, ${validated.y},
       ${validated.width}, ${validated.height}, ${validated.z_index}
     )
@@ -108,11 +108,11 @@ assets.get("/:id", async (c) => {
   const result = await sql`
     SELECT a.* 
     FROM assets a
-    INNER JOIN canvases c ON a.canvas_id = c.id
-    LEFT JOIN canvas_collaborators cc ON c.id = cc.canvas_id
+    INNER JOIN files f ON a.file_id = f.id
+    LEFT JOIN file_collaborators fc ON f.id = fc.file_id
     WHERE a.id = ${assetId}
-      AND c.deleted_at IS NULL
-      AND (c.owner_id = ${user.id} OR cc.user_id = ${user.id})
+      AND f.deleted_at IS NULL
+      AND (f.owner_id = ${user.id} OR fc.user_id = ${user.id})
   `;
 
   if (result.length === 0) {
@@ -169,11 +169,11 @@ assets.patch("/:id", async (c) => {
   const result = await sql`
     UPDATE assets a
     SET ${sql.unsafe(setClauses.join(", "))}
-    FROM canvases c
+    FROM files f
     WHERE a.id = ${assetId}
-      AND a.canvas_id = c.id
-      AND c.owner_id = ${user.id}
-      AND c.deleted_at IS NULL
+      AND a.file_id = f.id
+      AND f.owner_id = ${user.id}
+      AND f.deleted_at IS NULL
     RETURNING a.*
   `;
 
@@ -197,11 +197,11 @@ assets.delete("/:id", async (c) => {
 
   const result = await sql`
     DELETE FROM assets a
-    USING canvases c
+    USING files f
     WHERE a.id = ${assetId}
-      AND a.canvas_id = c.id
-      AND c.owner_id = ${user.id}
-      AND c.deleted_at IS NULL
+      AND a.file_id = f.id
+      AND f.owner_id = ${user.id}
+      AND f.deleted_at IS NULL
     RETURNING a.id, a.name
   `;
 

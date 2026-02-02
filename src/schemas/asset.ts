@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const createAssetSchema = z.object({
-  canvas_id: z.string().uuid(),
+  file_id: z.string().uuid(),
   name: z.string().min(1).max(255).trim(),
   file_type: z.string().min(1), // MIME type: "image/png"
   r2_url: z.string().url(),
